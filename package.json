@@ -1,0 +1,63 @@
+{
+  "name": "dsh-npm-release",
+  "version": "1.0.0",
+  "description": "按本机真实踩过的坑做 npm 打包与发布：凭据形态与包级 scope、镜像与发布源分流、代理可连通性、缓存可写性、2FA 人工授权、发布后以 dist-tags 判定，而不是拿 202 当成功。",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "npm",
+    "publish",
+    "release",
+    "registry"
+  ],
+  "license": "MIT",
+  "author": "scientificmaniac (https://github.com/scientificmaniac)",
+  "type": "module",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/scientificmaniac/dsh-npm.git"
+  },
+  "homepage": "https://github.com/scientificmaniac/dsh-npm#readme",
+  "bugs": {
+    "url": "https://github.com/scientificmaniac/dsh-npm/issues"
+  },
+  "scripts": {
+    "check": "node scripts/check.mjs",
+    "check:icon": "node scripts/check-icon.mjs",
+    "probe": "node scripts/probe-2fa.mjs",
+    "smoke": "node test/smoke.mjs status",
+    "test": "node test/unit.mjs && node scripts/check-icon.mjs && node scripts/check.mjs"
+  },
+  "files": [
+    "index.js",
+    "lib",
+    "locale",
+    "cordis.patch.yml",
+    "icon.svg",
+    "README.md",
+    "CHANGELOG.md",
+    "SECURITY.md",
+    "LICENSE"
+  ],
+  "icon": "./icon.svg",
+  "meta": {
+    "title": "npm release",
+    "description": "Check, pack, publish and verify an npm package in one place. The publish step waits for a human to authorize the 2FA prompt, and success is confirmed from the registry's dist-tags instead of the publish command's exit code."
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

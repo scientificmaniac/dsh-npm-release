@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "npm release",
+    "description": "Check, pack, publish and verify an npm package in one place. The publish step waits for a human to authorize the 2FA prompt, and success is confirmed from the registry's dist-tags instead of the publish command's exit code."
+  }
+}

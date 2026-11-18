@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22, 24]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      # 本插件零运行时依赖，因此不需要 install 步骤。
+      - name: 单元测试
+        run: node test/unit.mjs
+
+      - name: 图标自检
+        run: node scripts/check-icon.mjs
+
+      - name: 打包自检
+        run: node scripts/check.mjs

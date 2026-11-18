@@ -1,0 +1,27 @@
+# 依赖与构建产物
+node_modules/
+
+# npm 缓存（插件会把它钉在包目录内）
+.npm-cache/
+
+# 打包产物
+dist/
+*.tgz
+*.zip
+
+# 本地机密：绝不入库
+.npmrc
+.env
+.env.*
+*.pem
+*.key
+
+# 日志与临时文件
+*.log
+*.tmp
+
+# 操作系统与编辑器
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
