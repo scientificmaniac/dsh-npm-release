@@ -236,6 +236,7 @@ export function apply(ctx, config = {}) {
         latest: state.latest,
         versionCount: state.versions.length,
         placeholderOnly: state.placeholderOnly === true,
+        unpublishedAt: state.unpublishedAt,
         visible: detail.visible === true,
         inDistTag: detail.inDistTag,
         shasum: detail.shasum,
@@ -262,13 +263,17 @@ export function apply(ctx, config = {}) {
       }
       // 发布前跑一遍检查：把「版本已存在」这类必然失败挡在 npm 之前，
       // 省掉一次含 2FA 授权的完整流程。
+      //
+      // 注意这里**不能**跳过 pack：内容泄露扫描依赖真实打包清单（哪些文件真的会进 tgz）。
+      // 曾经为了省几秒跳过它，结果 README 里的本机路径与账号名直接发到了公开 registry——
+      // npm 不允许覆盖版本，泄露发出去只能 unpublish 或提版本补救。
       if (args.skip_check !== true) {
         const report = await runChecks({
           dir,
           registry,
           proxy: proxy.url,
           timeoutMs: defaultTimeoutMs,
-          skip: ['pack'],
+          skip: [],
           verifyPackageName: true,
         })
         if (report.ok !== true) {
@@ -326,7 +331,7 @@ export function apply(ctx, config = {}) {
         },
         proxy: {
           type: 'string',
-          description: 'HTTP proxy URL such as http://127.0.0.1:7897, or "off" to force a direct connection. '
+          description: 'HTTP proxy URL such as http://127.0.0.1:<port>, or "off" to force a direct connection. '
             + 'Defaults to the environment proxy, then the Windows system proxy.',
         },
         tag: {

@@ -32,22 +32,22 @@ dsh plugin --profile desktop install .
 
 ```
 npm 发布环境
-工作目录：E:\ai project\dsh-npm
-npm：D:\NodeJs\node.exe ...\npm-cli.js（来源：derived）
+工作目录：<project-dir>
+npm：<node> <npm-cli.js>（来源：derived）
 registry：https://registry.npmjs.org（官方源）
-代理：http://127.0.0.1:7897（系统代理） → 可用
+代理：http://127.0.0.1:<port>（系统代理） → 可用
 
-用户 npmrc：C:\Users\...\.npmrc
+用户 npmrc：C:\Users\<user>\.npmrc
   其中的 registry：https://registry.npmmirror.com
   //registry.npmjs.org/:_authToken → 形态合法（npm-token）
   ! 全局 registry 指向镜像 https://registry.npmmirror.com。镜像适合装包，不承载登录态也不能发布。
 
-账号：kxfz <...@outlook.com>
+账号：<username> <you@example.com>
 2FA 模式：auth-and-writes
   写入类操作（发布）需要 2FA：发布时 npm 会要求一次性验证码或浏览器授权。
 ```
 
-### `action: "check"` —— 九项发布前检查
+### `action: "check"` —— 十项发布前检查
 
 | # | 检查 | 说明 |
 |---|---|---|
@@ -60,6 +60,15 @@ registry：https://registry.npmjs.org（官方源）
 | 7 | 打包内容 | `files` 是否覆盖入口与 exports；重资产是否误入 |
 | 8 | registry 占用 | 包名是否存在、目标版本是否已发布、是否低于 latest |
 | 9 | 2FA 必要性 | 查账号接口的 `tfa.mode`，得出「发布时会不会被要求授权」 |
+| 10 | **内容泄露** | 待发布的文件里有没有主目录、邮箱、凭据、内网地址；命中时脱敏报告 |
+
+第 10 项以**真实打包清单**为输入，不是递归扫目录——所以既不会漏掉被 npm 默认包含的
+README/package.json，也不会被不会进包的 `.env`、测试数据淹没。`error` 级命中（主目录、
+邮箱、凭据）会阻断发布；回环地址、内网 IP、绝对路径是 `warn`，交给人判断。
+
+> 这一项是**事后补的**：`1.0.0` 与 `1.0.1` 上线之后才发现 README 示例里带着本机主目录、
+> 项目路径、代理端口与账号名。前九项一条都没覆盖它，而 npm 不允许覆盖已发布版本——
+> 最后只能把这三个版本全部 unpublish。
 
 有 `error` 级问题时返回「现在发布必然失败」，`publish` 会据此在调用 npm **之前**中止。
 
@@ -148,7 +157,7 @@ Open this URL in your browser to authenticate:  ← 另一条 EOTP 文案
     timeoutMs: 240000                       # 单条 npm 命令超时
     verifyTimeoutMs: 300000                 # 发布后等待 registry 生效的超时
     verifyIntervalMs: 10000                 # 轮询间隔
-    proxy: http://127.0.0.1:7897            # 显式代理；留空则读环境变量与系统代理
+    proxy: http://127.0.0.1:<port>          # 显式代理；留空则读环境变量与系统代理
     permissions:
       publish: true                         # 设为 false 只保留 check / pack / verify
 ```
@@ -169,6 +178,8 @@ Open this URL in your browser to authenticate:  ← 另一条 EOTP 文案
 - **只支持 HTTP 代理，不支持 SOCKS。** 零依赖实现；SOCKS 会明确报错而不是静默直连。
 - **git tag 只看本地。** 远端要联网，本地 tag 已足够发现「版本号没动」。
 - **`dist-tags` 可能仍指向旧版本。** 传了非 `latest` 的 tag 时，「版本可见」与「成为 latest」是两件事，两者分开报告。
+- **unpublish 之后包名仍被占用。** 实测把三个版本全部 unpublish 后，`GET /<name>` 仍返回 200，但 `versions` 与 `dist-tags` 被抽空，只剩 `time.unpublished`。这个状态被单独识别为 `unpublished`：内容已下架，但名字还是你的，重新发布不需要改名。
+- **内容泄露检查是启发式的。** 它按规则匹配，不认识你项目里的专有名词（内部代号、客户名、未公开的服务域名）。规则之外的信息仍需自己过一遍。
 
 ---
 

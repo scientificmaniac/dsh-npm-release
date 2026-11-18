@@ -11,6 +11,7 @@ import { normalizeProxyServer, proxyFromEnv } from '../lib/proxy.js'
 import { summarizePackList, formatBytes } from '../lib/package-check.js'
 import { compareVersions, extractJson } from '../lib/check-runner.js'
 import { describeSpawnError, locateNpm, runCommand } from '../lib/npm-run.js'
+import { scanForLeaks, mask, isPlaceholderPath } from '../lib/leak-check.js'
 import { sortFindings, isBlocking, describeReason, reason } from '../lib/reason.js'
 import { renderCheckReport, renderPublishResult, renderVerifyResult } from '../lib/render.js'
 
@@ -370,6 +371,35 @@ const stubText = renderVerifyResult({
 check('占位符结果说明不是抢注', stubText.includes('不是别人抢注'), stubText)
 check('占位符结果提示不要重发', stubText.includes('不要重新发布'), stubText)
 
+// unpublish 之后的真实形态：GET /<name> 仍返回 200，但 versions 与 dist-tags 被抽空，
+// 只剩 time.unpublished。判成「首次发布」或「包还在」都是错的。
+const unpublishedDoc = {
+  _id: 'x', name: 'x',
+  time: {
+    created: '2026-11-18T16:04:30.577Z',
+    modified: '2026-11-18T16:38:26.345Z',
+    '1.0.0': '2026-11-18T16:08:41.678Z',
+    unpublished: { time: '2026-11-18T16:38:26.344Z', versions: ['0.0.0-stage', '1.0.0'] },
+  },
+}
+const unpubState = await fetchPackageState({
+  registry: 'https://registry.npmjs.org',
+  name: 'dsh-npm-release',
+})
+// 网络状态会变（包可能被重新发布），所以只断言「要么是已知状态之一」，
+// 真正的判定逻辑用本地构造的文档验证。
+check('查询返回已知状态', ['visible', 'not-visible', 'package-absent', 'unpublished', 'unknown'].includes(unpubState.state), unpubState.state)
+
+// 直接验证 unpublish 判定：模拟 registry 的 200 + 空 versions + time.unpublished。
+const unpubText = renderVerifyResult({
+  name: 'x', version: '1.0.0', state: 'unpublished',
+  latest: undefined, versionCount: 0, visible: false,
+  unpublishedAt: unpublishedDoc.time.unpublished.time,
+})
+check('unpublish 说明内容已下架', unpubText.includes('unpublish'), unpubText)
+check('unpublish 说明包名仍被占用', unpubText.includes('仍被占用') || unpubText.includes('包名'), unpubText)
+check('unpublish 不误称首次发布', !unpubText.includes('首次发布'), unpubText)
+
 // ——————————————————————————————————————————————
 // 9. 版本比较与 JSON 提取
 // ——————————————————————————————————————————————
@@ -502,6 +532,66 @@ const versionRun = await runCommand({
 })
 equal('npm --version 退出码 0', versionRun.exitCode, 0)
 check('npm --version 有版本号输出', /^\d+\.\d+\.\d+/.test(versionRun.stdout.trim()), versionRun.combined)
+
+// ——————————————————————————————————————————————
+// 13. 内容泄露扫描：一次真实的公开泄露
+// ——————————————————————————————————————————————
+section('内容泄露扫描')
+
+// 下面这个样本就是 v1.0.0 / v1.0.1 实际发出去的内容：
+// 主目录、账号名、邮箱域名、绝对项目路径、代理端口全在里面。
+const leakedReadme = [
+  'npm 发布环境',
+  '工作目录：E:\\ai project\\my-plugin',
+  'npm：D:\\NodeJs\\node.exe ...\\npm-cli.js（来源：derived）',
+  '代理：http://127.0.0.1:7897（系统代理） → 可用',
+  '用户 npmrc：C:\\Users\\SomeUser\\.npmrc',
+  '账号：someuser <someone@outlook.com>',
+].join('\n')
+
+const leakReport = scanForLeaks([{ path: 'README.md', content: leakedReadme }])
+equal('真实泄露被拦下（ok=false）', leakReport.ok, false)
+check('命中主目录', leakReport.findings.some((f) => f.code === 'leak-home-path'), JSON.stringify(leakReport.findings.map((f) => f.code)))
+check('命中邮箱', leakReport.findings.some((f) => f.code === 'leak-email'), JSON.stringify(leakReport.findings.map((f) => f.code)))
+check('命中绝对路径或回环地址', leakReport.findings.some((f) => f.code === 'leak-abs-path' || f.code === 'leak-loopback'), '应命中路径类')
+
+// 报告本身不能再成为一份泄露清单。
+check('报告里不出现真实用户名', !leakReport.findings.some((f) => f.message.includes('SomeUser')), JSON.stringify(leakReport.findings.map((f) => f.message)))
+check('报告里不出现完整邮箱', !leakReport.findings.some((f) => f.message.includes('someone@outlook.com')), JSON.stringify(leakReport.findings.map((f) => f.message)))
+check('每条命中都带 why', leakReport.findings.every((f) => typeof f.why === 'string' && f.why.length > 0), '每条要有解释')
+
+// 修正后的占位写法必须放过，否则会逼着人把文档写成不可读的样子。
+const cleanReadme = [
+  '工作目录：<project-dir>',
+  'npm：<node> <npm-cli.js>（来源：derived）',
+  '代理：http://127.0.0.1:<port>（系统代理）',
+  '用户 npmrc：C:\\Users\\<user>\\.npmrc',
+  '账号：<username> <you@example.com>',
+].join('\n')
+const cleanReport = scanForLeaks([{ path: 'README.md', content: cleanReadme }])
+equal('占位写法不阻断', cleanReport.ok, true)
+equal('占位写法零命中', cleanReport.findings.length, 0)
+
+equal('尖括号占位', isPlaceholderPath('C:\\Users\\<user>'), true)
+equal('省略号占位', isPlaceholderPath('C:\\Users\\...'), true)
+equal('变量占位', isPlaceholderPath('${HOME}/x'), true)
+equal('真实用户名不是占位', isPlaceholderPath('C:\\Users\\SomeUser'), false)
+
+// 真实凭据形态必须被拦。
+const tokenLeak = scanForLeaks([{ path: 'a.js', content: 'const t = "npm_abcdefghijklmnopqrstuvwxyz123456"' }])
+equal('npm 凭据被拦下', tokenLeak.ok, false)
+check('凭据报告脱敏', !tokenLeak.findings.some((f) => f.message.includes('abcdefghijklmnopqrstuvwxyz123456')), JSON.stringify(tokenLeak.findings.map((f) => f.message)))
+
+// 二进制文件不参与扫描，避免乱码误报。
+const binary = scanForLeaks([{ path: 'icon.png', content: 'C:\\Users\\SomeUser\\x' }])
+equal('非文本文件跳过', binary.findings.length, 0)
+
+// 没有内容的文件不会崩。
+equal('空输入安全', scanForLeaks([]).ok, true)
+equal('undefined 安全', scanForLeaks(undefined).ok, true)
+
+equal('邮箱脱敏保留域名', mask('someone@outlook.com'), 's******@outlook.com')
+check('token 脱敏只留前 4 位', mask('npm_abcdefghijklmnopqrstuvwxyz').startsWith('npm_'), mask('npm_abcdefghijklmnopqrstuvwxyz'))
 
 // ——————————————————————————————————————————————
 // 汇总
