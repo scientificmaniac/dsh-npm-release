@@ -10,6 +10,7 @@ import { describeTfaMode } from '../lib/credentials.js'
 import { normalizeProxyServer, proxyFromEnv } from '../lib/proxy.js'
 import { summarizePackList, formatBytes } from '../lib/package-check.js'
 import { compareVersions, extractJson } from '../lib/check-runner.js'
+import { describeSpawnError, locateNpm, runCommand } from '../lib/npm-run.js'
 import { sortFindings, isBlocking, describeReason, reason } from '../lib/reason.js'
 import { renderCheckReport, renderPublishResult, renderVerifyResult } from '../lib/render.js'
 
@@ -96,6 +97,37 @@ const scopeReport = inspectTokenScopes(scopedTokens, 'dsh-vm-control')
 equal('token 列表可读', scopeReport.available, true)
 equal('不覆盖目标包', scopeReport.covering, undefined)
 check('识别出阻断的 token', scopeReport.blocking !== undefined, '应识别出 scope 不覆盖')
+// 只有「全部可写 token 都不覆盖」才算必然 403。
+// 列表里只有一条不覆盖的 token 时，两者都成立，所以这条也必须为真——
+// 语义收紧不能变成放宽。
+check('全部不覆盖时 blockingAll 成立', scopeReport.blockingAll !== undefined, '应给出 blockingAll')
+
+// 这是真实的误报来源：本机同时存在「只授权 dsh-ssh-vault」与「全包」两条 token 时，
+// 旧逻辑拿第一条不覆盖的当作阻断项，于是发布任何新包都被判成「必然失败」并中止。
+const mixedTokens = [
+  {
+    name: 'dsh-ssh-vault', key: 'k2', revoked: null,
+    permissions: [{ name: 'package', action: 'write' }],
+    scopes: [{ name: 'dsh-ssh-vault', type: 'package' }],
+  },
+  {
+    name: 'dsh-vm-control', key: 'k3', revoked: null,
+    permissions: [{ name: 'package', action: 'write' }],
+    scopes: [],
+  },
+]
+const mixed = inspectTokenScopes(mixedTokens, 'dsh-npm-release')
+equal('有全包 token 时不算阻断', mixed.blocking, undefined)
+equal('有全包 token 时 blockingAll 为空', mixed.blockingAll, undefined)
+check('有全包 token 时能找到覆盖项', mixed.covering !== undefined, '应识别出全包 token 覆盖')
+
+// 覆盖目标包的是一条**限定 scope** 的 token（不是全包）时，也不能算阻断。
+const partialCover = inspectTokenScopes([
+  { name: 'a', revoked: null, permissions: [{ name: 'package', action: 'write' }], scopes: [{ name: 'other', type: 'package' }] },
+  { name: 'b', revoked: null, permissions: [{ name: 'package', action: 'write' }], scopes: [{ name: 'target', type: 'package' }] },
+], 'target')
+equal('限定 scope 覆盖时不算阻断', partialCover.blockingAll, undefined)
+equal('限定 scope 覆盖时能找到覆盖项', partialCover.covering?.name, 'b')
 
 const covered = inspectTokenScopes(scopedTokens, 'dsh-ssh-vault')
 check('覆盖同名包', covered.covering !== undefined, '应识别出覆盖')
@@ -363,6 +395,41 @@ check('disabled 说明未启用', disabled.includes('未启用'), disabled)
 
 const unknown = describeTfaMode('some-new-mode')
 check('未知模式不假装确定', unknown.includes('以实际响应为准'), unknown)
+
+// ——————————————————————————————————————————————
+// 12. npm 入口定位与 spawn 失败
+// ——————————————————————————————————————————————
+section('npm 入口与 spawn')
+
+// 这是插件第一次真实发布时崩掉的原因：Host 进程用的是自带运行时，
+// 目录里没有 npm，且它不由 npm 启动（npm_execpath 为空）。
+// 四条推断落空后旧代码退到 `npm.cmd`，而 Windows 上 shell:false 跑 .cmd 是**同步抛 EINVAL**。
+const located = await locateNpm()
+check('能找到 npm 入口', typeof located?.command === 'string' && located.command.length > 0, JSON.stringify(located))
+check('入口不会直接是 npm.cmd', !/\.cmd$/i.test(located.command), located.command)
+check('入口来源可解释', ['configured', 'derived', 'npm_execpath', 'path-scan', 'comspec', 'path'].includes(located.source), located.source)
+check('没有 bare npm.cmd 兜底', !(located.source === 'path' && located.command === 'npm.cmd'), JSON.stringify(located))
+
+// EINVAL 的解释必须点出真正原因，而不是原样抛一句 "spawn EINVAL"。
+const explained = describeSpawnError(Object.assign(new Error('spawn EINVAL'), { code: 'EINVAL' }), 'npm.cmd', ['-v'])
+check('EINVAL 解释提到 shell:false 跑 .cmd', /shell:false/.test(explained) && /cmd/.test(explained), explained)
+check('ENOENT 解释提到找不到', /找不到/.test(describeSpawnError(Object.assign(new Error('x'), { code: 'ENOENT' }), 'nope')), 'ENOENT')
+
+// spawn 失败必须是**返回值**，不能冒泡成异常——冒泡会让整个动作只剩一句 Error。
+// 一个必然不存在的可执行文件：进程能起来才会 ENOENT，起不来则同步抛错，
+// 两种路径都必须落到同一个可解释的结果上。
+const spawnFailed = await runCommand({ command: 'definitely-not-a-real-binary-xyz', args: [], timeoutMs: 5000 })
+equal('spawn 失败不抛异常且退出码为 -1', spawnFailed.exitCode, -1)
+check('spawn 失败带 spawnError 说明', typeof spawnFailed.spawnError === 'string' && spawnFailed.spawnError.length > 0, JSON.stringify(spawnFailed))
+
+// 真实 npm 必须能被跑起来：这是「Host 侧能用」的最小证据。
+const versionRun = await runCommand({
+  command: located.command,
+  args: [...located.prefixArgs, '--version'],
+  timeoutMs: 60000,
+})
+equal('npm --version 退出码 0', versionRun.exitCode, 0)
+check('npm --version 有版本号输出', /^\d+\.\d+\.\d+/.test(versionRun.stdout.trim()), versionRun.combined)
 
 // ——————————————————————————————————————————————
 // 汇总

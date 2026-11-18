@@ -161,6 +161,8 @@ Open this URL in your browser to authenticate:  ← 另一条 EOTP 文案
 ## 已知限制
 
 - **`/-/npm/v1/user` 必须带凭据才有效。** 不带 token 时它返回 401，而这个 401 极易被误读成「granular token 没有读用户资料的权限」。本插件早期版本正是这样误判的：隔离 userconfig 时没有继承 token，于是得出「2FA 查不到」的错误结论。现在改成显式继承凭据，并区分「没带凭据」与「凭据被拒」。
+- **npm 入口靠推断，不靠 `PATH` 的顺序。** 顺序是：显式配置 → 与 `process.execPath` 同级的 `npm-cli.js` → `npm_execpath` → 扫 `PATH` 找真实 `npm-cli.js` → `cmd /d /c npm`。**任何情况下都不会直接 `spawn('npm.cmd')`**：Node 从 18.20 / 20.12 起（CVE-2024-27980）在 `shell: false` 下同步抛 `EINVAL`，DSH Desktop 的 Host 进程用的正是自带的不含 npm 的运行时，这条路上崩溃过一次，报错只有一句 `Error: spawn EINVAL`。想钉死位置时设 `DSH_NPM_RELEASE_NPM_CLI` 与 `DSH_NPM_RELEASE_NODE`。
+- **token 列表只能证明「有没有一条能覆盖」，不能证明「本机在用哪一条」。** `npm token list` 把 token 原文打码了，而 `.npmrc` 里只存一条 `_authToken`。所以只有「每一条可写 token 的 scope 都不含目标包」才判阻断；反过来只能说「存在覆盖项」，不会替你断言发布一定成功。
 - **不自动提交授权。** 人在环，没有例外。
 - **token 列表可能读不到。** 无 `tokens:read` 权限时 `npm token list` 返回 401；此时插件只告诉你「无法核对包范围」，不会编造结论。
 - **代理时通时断。** 实测同一分钟内代理端口会成功、失败、再成功，因此查询类请求在代理失败时自动回退直连，并把实际走成的路径报告出来。
