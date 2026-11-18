@@ -13,25 +13,6 @@
 
 ---
 
-## 为什么需要它
-
-以下每一条都不是假想，都是本机真实发生过、并让人走错方向的事故。
-
-| 现象 | 真实原因 | 本插件的处理 |
-|---|---|---|
-| `Bearer <新token> is not a legal HTTP header value` | `.npmrc` 里有一行占位符 `_authToken`，被当成真实凭据发出 | 用**形态白名单**校验 token，占位符在调用 npm 之前就被拦下 |
-| `403 You may not perform that action with these credentials` | granular token 的 `scopes` 只含别的包；npm 的文案完全没说这件事 | 读 `npm token list` 核对包级 scope，把 403 分诊成三个不同原因 |
-| `npm login` 覆盖掉了另一个包的登录态 | `_authToken` 按 registry host 存**一条**，不按包分 | 用隔离的临时 userconfig，一次也不改写用户的 `~/.npmrc` |
-| 发布返回成功，registry 上仍是旧版本 | 命令的 202 只代表「已接受」，传播要几十秒到两分钟 | **唯一成功判据是 registry 的 `versions` 里真的出现该版本** |
-| `ETARGET: No matching version found` | 传播未完成，不是发布失败 | 归类为 `not-propagated`，明确提示不要重发 |
-| 发布后 `npm install` 拿旧版本 | 同上；此时重发会撞 `E409` | 轮询 `dist-tags`，超时返回 `not-visible` 而非 `failed` |
-| `EPERM ... _cacache`，连 `npm pack --dry-run` 都跑不了 | 沙箱下用户级缓存不可写，日志也落不了盘 | 自动把 `npm_config_cache` 指到工作区内 |
-| GitHub / npm 全部超时，但端口在听 | `ProxyEnable=0`；或 fake-ip 让端口通、TLS 失败 | 真的发一次 HTTPS 请求来判断，**不探端口**（会假阳性） |
-| 发布前不知道包名是否被占 / 版本是否已发 | 没查 | registry 查询 + 版本比对，在 `check` 阶段阻断 |
-| 1.5 MB 的包，1.5 MB 是一张宣传图 | `files` 没约束重资产 | 打包清单双向检查：该在的在，不该在的不在 |
-
----
-
 ## 安装
 
 ```powershell
@@ -47,19 +28,23 @@ dsh plugin --profile desktop install .
 
 ### `action: "status"` —— 先看清环境
 
-只读，不跑任何 npm 写操作。报告 npm 的入口与来源、registry、代理可用性、用户 `.npmrc` 的 token 形态。
+只读，不跑任何 npm 写操作。报告 npm 的入口与来源、registry、代理可用性、用户 `.npmrc` 的 token 形态，以及账号与 2FA 模式。
 
 ```
 npm 发布环境
 工作目录：E:\ai project\dsh-npm
 npm：D:\NodeJs\node.exe ...\npm-cli.js（来源：derived）
 registry：https://registry.npmjs.org（官方源）
-代理：直连 → 可用
+代理：http://127.0.0.1:7897（系统代理） → 可用
 
 用户 npmrc：C:\Users\...\.npmrc
   其中的 registry：https://registry.npmmirror.com
   //registry.npmjs.org/:_authToken → 形态合法（npm-token）
   ! 全局 registry 指向镜像 https://registry.npmmirror.com。镜像适合装包，不承载登录态也不能发布。
+
+账号：kxfz <...@outlook.com>
+2FA 模式：auth-and-writes
+  写入类操作（发布）需要 2FA：发布时 npm 会要求一次性验证码或浏览器授权。
 ```
 
 ### `action: "check"` —— 九项发布前检查
