@@ -204,6 +204,30 @@ check('第三条文案也能认', otherUrl?.url?.includes('/auth/cli/'), JSON.st
 
 equal('没有链接时返回 undefined', extractWebAuth('nothing here'), undefined)
 
+// 这是真实发布里撞到的一幕：npm 在非 TTY 下把授权 URL 打成 ***。
+// 旧实现返回 undefined，于是工具说「没取到链接」——把「npm 主动打码」
+// 讲成了「插件没抓到」，并暗示重发即可，而重发永远是 ***。
+const redactedAuth = extractWebAuth([
+  'npm error code EOTP',
+  'npm error This operation requires a one-time password.',
+  'npm error Open this URL in your browser to authenticate:',
+  'npm error   https://www.npmjs.com/auth/cli/***',
+  'npm error After authenticating, your token can be retrieved from:',
+  'npm error   https://registry.npmjs.org/-/v1/done?authId=***',
+].join('\n'))
+check('打码的链接被认出来', redactedAuth !== undefined, JSON.stringify(redactedAuth))
+equal('打码标记为 redacted', redactedAuth?.redacted, true)
+equal('打码时不给出 url', redactedAuth?.url, undefined)
+check('打码时不把 *** 当成真 id', !/\*\*\*/.test(redactedAuth?.url ?? ''), String(redactedAuth?.url))
+
+// 未打码时不能误标 redacted。
+equal('真链接不算打码', authUrl?.redacted, false)
+
+// 渲染层必须给出「去真终端」的下一步，而不是「再发一次」。
+const redactedText = renderPublishResult({ status: 'needs-authorization', redacted: true })
+check('打码结果指向真终端', redactedText.includes('终端'), redactedText)
+check('打码结果不承诺重发能拿到新链接', !redactedText.includes('重发会拿到新链接'), redactedText)
+
 const withDone = extractWebAuth('https://www.npmjs.com/auth/cli/abc\nhttps://registry.npmjs.org/-/v1/done?sessionId=xyz')
 check('同时取出 doneUrl', withDone?.doneUrl?.includes('/-/v1/done'), JSON.stringify(withDone))
 
