@@ -1,0 +1,17 @@
+# 统一行尾：仓库内一律 LF。
+# 不处理的话，Windows 检出成 CRLF、Linux CI 检出成 LF，
+# 会让同一个文件在不同平台产生不同的 diff，也可能让脚本里的 shebang 失效。
+* text=auto eol=lf
+
+# 明确二进制，避免被当作文本改写
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.gif binary
+*.zip binary
+*.tgz binary
+
+# GitHub Actions 的 workflow 必须是 LF
+*.yml text eol=lf
+*.yaml text eol=lf
