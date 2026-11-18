@@ -5,7 +5,7 @@
  * 只测「能不能跑」没有意义，这里测的是**判断是否正确**。
  */
 import { inspectTokenShape, parseNpmrcTokens, parseNpmrcRegistry, isMirrorRegistry, inspectTokenScopes } from '../lib/credentials.js'
-import { classifyPublishOutput, extractWebAuth, parsePublishNotice, parseSize, inspectVersion, waitForVersion } from '../lib/registry.js'
+import { classifyPublishOutput, extractWebAuth, parsePublishNotice, parseSize, inspectVersion, waitForVersion, isPlaceholderVersion, realVersions, fetchPackageState } from '../lib/registry.js'
 import { describeTfaMode } from '../lib/credentials.js'
 import { normalizeProxyServer, proxyFromEnv } from '../lib/proxy.js'
 import { summarizePackList, formatBytes } from '../lib/package-check.js'
@@ -321,6 +321,54 @@ const notVisible = await waitForVersion({
 equal('超时状态是 not-visible', notVisible.state, 'not-visible')
 equal('超时 ok=false', notVisible.ok, false)
 check('超时理由说明不是失败', notVisible.reason.includes('重发'), notVisible.reason)
+
+// ——————————————————————————————————————————————
+// 9. npm 发布占位符：一次差点被误读成「包名被抢注」
+// ——————————————————————————————————————————————
+section('发布占位符')
+
+// 真实数据：刚 PUT 202 六秒后，registry 上唯一版本是 npm 自己建的 0.0.0-stage。
+equal('占位符被识别', isPlaceholderVersion('0.0.0-stage'), true)
+equal('带后缀的占位符也被识别', isPlaceholderVersion('0.0.0-stage.1'), true)
+equal('真实版本不是占位符', isPlaceholderVersion('1.0.0'), false)
+equal('相似但不同不误判', isPlaceholderVersion('0.0.0'), false)
+equal('undefined 不抛错', isPlaceholderVersion(undefined), false)
+
+equal('真实版本过滤掉占位符', realVersions(['0.0.0-stage', '1.0.0']).join(','), '1.0.0')
+equal('只有占位符时过滤为空', realVersions(['0.0.0-stage']).length, 0)
+equal('非数组安全', realVersions(undefined).length, 0)
+
+// 只有占位符的真实 registry 文档必须被标成 placeholderOnly，
+// 否则 verify 会说「已知 1 个版本」，让人以为包名被占了。
+const stubDoc = {
+  versions: { '0.0.0-stage': { dist: { shasum: 'x' } } },
+  'dist-tags': { latest: '0.0.0-stage' },
+  time: { created: 'now' },
+}
+const stubState = await fetchPackageState({
+  registry: 'https://registry.npmjs.org',
+  name: 'dsh-npm-release',
+  proxy: undefined,
+})
+// 用本地构造的文档验证纯判定逻辑（不依赖网络当时的真实状态）。
+const stubLike = {
+  state: 'visible',
+  latest: stubDoc['dist-tags'].latest,
+  versions: Object.keys(stubDoc.versions),
+  realVersions: realVersions(Object.keys(stubDoc.versions)),
+  placeholderOnly: realVersions(Object.keys(stubDoc.versions)).length === 0,
+  doc: stubDoc,
+}
+equal('只有占位符时 placeholderOnly', stubLike.placeholderOnly, true)
+equal('占位符版本不算目标版本可见', inspectVersion(stubLike, '1.0.0').visible, false)
+check('网络查询仍是合法状态', typeof stubState.state === 'string', JSON.stringify(stubState.state))
+
+const stubText = renderVerifyResult({
+  name: 'dsh-npm-release', version: '1.0.0', state: 'visible',
+  latest: '0.0.0-stage', versionCount: 1, placeholderOnly: true, visible: false,
+})
+check('占位符结果说明不是抢注', stubText.includes('不是别人抢注'), stubText)
+check('占位符结果提示不要重发', stubText.includes('不要重新发布'), stubText)
 
 // ——————————————————————————————————————————————
 // 9. 版本比较与 JSON 提取

@@ -235,6 +235,7 @@ export function apply(ctx, config = {}) {
         state: state.state,
         latest: state.latest,
         versionCount: state.versions.length,
+        placeholderOnly: state.placeholderOnly === true,
         visible: detail.visible === true,
         inDistTag: detail.inDistTag,
         shasum: detail.shasum,
