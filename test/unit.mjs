@@ -11,7 +11,7 @@ import { normalizeProxyServer, proxyFromEnv } from '../lib/proxy.js'
 import { summarizePackList, formatBytes } from '../lib/package-check.js'
 import { compareVersions, extractJson } from '../lib/check-runner.js'
 import { describeSpawnError, locateNpm, runCommand } from '../lib/npm-run.js'
-import { scanForLeaks, mask, isPlaceholderPath } from '../lib/leak-check.js'
+import { scanForLeaks, mask, isPlaceholderPath, isSelfRuleFile } from '../lib/leak-check.js'
 import { sortFindings, isBlocking, describeReason, reason } from '../lib/reason.js'
 import { renderCheckReport, renderPublishResult, renderVerifyResult } from '../lib/render.js'
 
@@ -671,10 +671,16 @@ equal('AWS 密钥被拦下', awsLeak.ok, false)
 check('AWS 密钥被脱敏', !awsLeak.findings.some((f) => f.message.includes('AKIAIOSFODNN7EXAMPLE')), JSON.stringify(awsLeak.findings.map((f) => f.message)))
 check('AWS 脱敏保留前 4 位', mask('AKIAIOSFODNN7EXAMPLE').startsWith('AKIA'), mask('AKIAIOSFODNN7EXAMPLE'))
 
-// 2) POSIX 主目录曾在 `/home/alice` 后跟空格/逗号/&& 时完全漏报（要求 (?:\/|$)）。
-equal('POSIX 主目录后跟空格', scanForLeaks([{ path: 'a.md', content: 'cd /home/alice && ls' }]).findings.some((f) => f.code === 'leak-posix-home'), true)
-equal('POSIX 主目录后跟逗号', scanForLeaks([{ path: 'a.md', content: '目录是 /home/alice，然后' }]).findings.some((f) => f.code === 'leak-posix-home'), true)
-equal('POSIX 主目录后跟斜杠', scanForLeaks([{ path: 'a.md', content: '/home/alice/proj' }]).findings.some((f) => f.code === 'leak-posix-home'), true)
+// 2) POSIX 主目录曾在 `/home/demo-user` 后跟空格/逗号/&& 时完全漏报（要求 (?:\/|$)）。
+equal('POSIX 主目录后跟空格', scanForLeaks([{ path: 'a.md', content: 'cd /home/demo-user && ls' }]).findings.some((f) => f.code === 'leak-posix-home'), true)
+equal('POSIX 主目录后跟逗号', scanForLeaks([{ path: 'a.md', content: '目录是 /home/demo-user，然后' }]).findings.some((f) => f.code === 'leak-posix-home'), true)
+equal('POSIX 主目录后跟斜杠', scanForLeaks([{ path: 'a.md', content: '/home/demo-user/proj' }]).findings.some((f) => f.code === 'leak-posix-home'), true)
+
+// 占位写法 `/home/<name>` 必须放过：修漏报时不能把正确的文档写法也拦下。
+// 旧实现里 `<` 不属于用户名字符集，正则只匹配到 `/home/` 前缀，
+// 匹配文本不含尖括号，isPlaceholderPath 看不到占位符 —— 于是 error 误报。
+equal('POSIX 占位写法放过', scanForLeaks([{ path: 'a.md', content: '应写成 /home/<name> 这种形式' }]).findings.some((f) => f.code === 'leak-posix-home'), false)
+equal('Windows 占位写法放过', scanForLeaks([{ path: 'a.md', content: '应写成 C:\\Users\\<name> 这种形式' }]).findings.some((f) => f.code === 'leak-home-path'), false)
 
 // 3) 小写 c:\users\ 曾只报 warn（leak-abs-path）而不报 error（leak-home-path）。
 const lowerHome = scanForLeaks([{ path: 'a.md', content: 'c:\\users\\SomeUser\\x' }])
@@ -688,6 +694,18 @@ check('含空格路径不被截断', spacedHit !== undefined && spacedHit.messag
 // 5) 回环地址带真实端口曾原样出现在报告里（报告会进会话历史与日志）。
 equal('回环端口被脱敏', mask('127.0.0.1:9999'), '127.0.0.1:<port>')
 equal('裸回环保持原样', mask('127.0.0.1'), '127.0.0.1')
+
+// 6) 自指问题：检查器自己的规则文件里写满了示例路径，扫描自己会稳定产生 error，
+//    把 check 判成「现在发布必然失败」——一个修泄露的插件被自己的规则挡在发布之外。
+//    规则文本按文件排除，但这不能变成「任何文件都能靠改名跳过」。
+equal('规则文件被识别', isSelfRuleFile('lib/leak-check.js'), true)
+equal('规则文件带反斜杠也识别', isSelfRuleFile('lib\\leak-check.js'), true)
+equal('规则文件带 ./ 前缀也识别', isSelfRuleFile('./lib/leak-check.js'), true)
+equal('其它文件不被排除', isSelfRuleFile('lib/registry.js'), false)
+equal('同名但不同目录不被排除', isSelfRuleFile('test/leak-check.js'), false)
+// 排除必须真的生效：把含示例路径的内容挂在规则文件名下，不应产生 error。
+const selfFile = scanForLeaks([{ path: 'lib/leak-check.js', content: 'c:\\users\\demo\\x\n/home/demo-user' }])
+equal('规则文件内容不产生 error', selfFile.ok, true)
 
 // ——————————————————————————————————————————————
 // 14. 失效 token 必须阻断发布
