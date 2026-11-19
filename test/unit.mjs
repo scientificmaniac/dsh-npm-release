@@ -397,12 +397,9 @@ const stubDoc = {
   'dist-tags': { latest: '0.0.0-stage' },
   time: { created: 'now' },
 }
-const stubState = await fetchPackageState({
-  registry: 'https://registry.npmjs.org',
-  name: 'dsh-npm-release',
-  proxy: undefined,
-})
 // 用本地构造的文档验证纯判定逻辑（不依赖网络当时的真实状态）。
+// 这里刻意**不**调 fetchPackageState：单元测试不该依赖外网，
+// 否则 CI 在断网或 registry 抖动时会随机失败，而断言其实并不关心真实状态。
 const stubLike = {
   state: 'visible',
   latest: stubDoc['dist-tags'].latest,
@@ -413,7 +410,6 @@ const stubLike = {
 }
 equal('只有占位符时 placeholderOnly', stubLike.placeholderOnly, true)
 equal('占位符版本不算目标版本可见', inspectVersion(stubLike, '1.0.0').visible, false)
-check('网络查询仍是合法状态', typeof stubState.state === 'string', JSON.stringify(stubState.state))
 
 const stubText = renderVerifyResult({
   name: 'dsh-npm-release', version: '1.0.0', state: 'visible',
@@ -433,15 +429,9 @@ const unpublishedDoc = {
     unpublished: { time: '2026-11-18T16:38:26.344Z', versions: ['0.0.0-stage', '1.0.0'] },
   },
 }
-const unpubState = await fetchPackageState({
-  registry: 'https://registry.npmjs.org',
-  name: 'dsh-npm-release',
-})
-// 网络状态会变（包可能被重新发布），所以只断言「要么是已知状态之一」，
-// 真正的判定逻辑用本地构造的文档验证。
-check('查询返回已知状态', ['visible', 'not-visible', 'package-absent', 'unpublished', 'unknown'].includes(unpubState.state), unpubState.state)
-
 // 直接验证 unpublish 判定：模拟 registry 的 200 + 空 versions + time.unpublished。
+// 同样不调 fetchPackageState——真实状态会变（包可能被重新发布），
+// 断言它只能得到「是五种状态之一」这种没有保护力的结论；判定逻辑用纯函数验证。
 const unpubText = renderVerifyResult({
   name: 'x', version: '1.0.0', state: 'unpublished',
   latest: undefined, versionCount: 0, visible: false,
@@ -594,8 +584,15 @@ check('入口来源可解释', ['configured', 'derived', 'npm_execpath', 'path-s
 check('没有 bare npm.cmd 兜底', !(located.source === 'path' && located.command === 'npm.cmd'), JSON.stringify(located))
 
 // EINVAL 的解释必须点出真正原因，而不是原样抛一句 "spawn EINVAL"。
-const explained = describeSpawnError(Object.assign(new Error('spawn EINVAL'), { code: 'EINVAL' }), 'npm.cmd', ['-v'])
+//
+// 平台必须显式注入：这段文案只在 Windows 上有意义，而 CI 跑在 ubuntu 上。
+// 不注入就会依赖 `process.platform`，在 Linux 上走通用分支，断言随之失败——
+// 一个只在 Windows 通过、在 CI 必红的测试，等于没有测试。
+const explained = describeSpawnError(Object.assign(new Error('spawn EINVAL'), { code: 'EINVAL' }), 'npm.cmd', ['-v'], 'win32')
 check('EINVAL 解释提到 shell:false 跑 .cmd', /shell:false/.test(explained) && /cmd/.test(explained), explained)
+// 非 Windows 上同一异常不该硬套 Windows 结论。
+const explainedLinux = describeSpawnError(Object.assign(new Error('spawn EINVAL'), { code: 'EINVAL' }), 'npm', ['-v'], 'linux')
+check('非 Windows 不给 Windows 结论', !/shell:false/.test(explainedLinux), explainedLinux)
 check('ENOENT 解释提到找不到', /找不到/.test(describeSpawnError(Object.assign(new Error('x'), { code: 'ENOENT' }), 'nope')), 'ENOENT')
 
 // spawn 失败必须是**返回值**，不能冒泡成异常——冒泡会让整个动作只剩一句 Error。
