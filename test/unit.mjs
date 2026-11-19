@@ -183,6 +183,9 @@ const cases = [
   ['E403 包级 scope', 'npm error code E403\nnpm error 403 403 Forbidden - PUT https://registry.npmjs.org/x - You may not perform that action with these credentials.', 1, 'forbidden', false],
   ['ETARGET 传播中', 'npm error code ETARGET\nnpm error notarget No matching version found for demo-pkg@1.4.0.', 1, 'not-propagated', false],
   ['ENEEDAUTH', 'npm error code ENEEDAUTH\nnpm error need auth This command requires you to be logged in.', 1, 'not-logged-in', false],
+  // unpublish 后的 24 小时冷却期：报的是 403，措辞与权限拒绝相似，
+  // 必须比 forbidden 先判，否则会把人送去查 token scope 而白忙一场。
+  ['unpublish 冷却期', 'npm error code E403\nnpm error 403 403 Forbidden - PUT https://registry.npmjs.org/x - my-pkg cannot be republished until 24 hours have passed.', 1, 'republish-cooldown', false],
 ]
 
 for (const [label, output, exitCode, expected, needsHuman] of cases) {
@@ -267,6 +270,15 @@ equal('混合形态标记 redacted', mixedAuth?.redacted, true)
 const redactedText = renderPublishResult({ status: 'needs-authorization', redacted: true })
 check('打码结果指向真终端', redactedText.includes('终端'), redactedText)
 check('打码结果不承诺重发能拿到新链接', !redactedText.includes('重发会拿到新链接'), redactedText)
+
+// 24 小时冷却期必须与普通失败区分：混在一起会让人去排查 token 和网络。
+const cooldownText = renderPublishResult({
+  status: 'failed', cooldown: true, name: 'pkg', version: '1.0.2',
+  failure: { category: 'republish-cooldown', message: 'x', hint: '等满 24 小时' },
+})
+check('冷却期说明是 24 小时', cooldownText.includes('24 小时'), cooldownText)
+check('冷却期明确说不是凭据问题', cooldownText.includes('不是凭据'), cooldownText)
+check('冷却期不说重试', !cooldownText.includes('重试即可'), cooldownText)
 
 const withDone = extractWebAuth('https://www.npmjs.com/auth/cli/abc\nhttps://registry.npmjs.org/-/v1/done?sessionId=xyz')
 check('同时取出 doneUrl', withDone?.doneUrl?.includes('/-/v1/done'), JSON.stringify(withDone))

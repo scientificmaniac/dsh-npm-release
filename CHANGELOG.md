@@ -38,6 +38,11 @@
   全部测试仍然通过——因为测试只会把手写的 `state:'unpublished'` 喂给渲染层，
   从未验证「registry 文档 → 状态」这一步。现在把判定抽成纯函数 `interpretPackageDoc`
   并直接断言它的输出；同一变异会让 3 项测试失败。
+- **24 小时冷却期被当成权限拒绝。** 包名被 unpublish 后，npm 强制等满 24 小时才允许
+  重新发布任何版本，报的是 `403 ... cannot be republished until 24 hours have passed`。
+  这句话里同时有 403 和 «Forbidden»，旧分类逻辑把它归成 `forbidden`，
+  于是 `publish` 给出「分三种原因查 token scope」的分诊——把人送去查一个根本不存在的问题。
+  现在单独识别为 `republish-cooldown`，并说明「不是凭据、权限或网络问题，重试无效，等满 24 小时」。
 - **`facts.leak` 算了却不显示。** 报告里看不到「扫描了多少个待发布文件」，
   无法判断这项检查是真跑了还是被静默跳过。现在会输出扫描规模。
 
