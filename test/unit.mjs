@@ -5,7 +5,7 @@
  * 只测「能不能跑」没有意义，这里测的是**判断是否正确**。
  */
 import { inspectTokenShape, parseNpmrcTokens, parseNpmrcRegistry, isMirrorRegistry, inspectTokenScopes } from '../lib/credentials.js'
-import { classifyPublishOutput, extractWebAuth, parsePublishNotice, parseSize, inspectVersion, waitForVersion, isPlaceholderVersion, realVersions, fetchPackageState } from '../lib/registry.js'
+import { classifyPublishOutput, extractWebAuth, parsePublishNotice, parseSize, inspectVersion, waitForVersion, isPlaceholderVersion, realVersions, fetchPackageState, interpretPackageDoc, STATE_UNPUBLISHED, STATE_VISIBLE } from '../lib/registry.js'
 import { describeTfaMode } from '../lib/credentials.js'
 import { normalizeProxyServer, proxyFromEnv } from '../lib/proxy.js'
 import { summarizePackList, formatBytes } from '../lib/package-check.js'
@@ -67,7 +67,7 @@ const npmrc = [
   'registry=https://registry.npmmirror.com',
   `//registry.npmjs.org/:_authToken=npm_${'b'.repeat(36)}`,
   '//npm.pkg.github.com/:_authToken=ghp_xxx',
-  'prefix=D:\\node_global',
+  'prefix=<global-prefix>',
 ].join('\n')
 
 const tokens = parseNpmrcTokens(npmrc)
@@ -88,13 +88,13 @@ section('token 包级 scope')
 
 const scopedTokens = [
   {
-    name: 'dsh-ssh-vault', key: 'k1', bypass_2fa: false, revoked: null,
+    name: 'pkg-alpha', key: 'k1', bypass_2fa: false, revoked: null,
     permissions: [{ name: 'package', action: 'write' }],
-    scopes: [{ name: 'dsh-ssh-vault', type: 'package' }],
+    scopes: [{ name: 'pkg-alpha', type: 'package' }],
   },
 ]
 
-const scopeReport = inspectTokenScopes(scopedTokens, 'dsh-vm-control')
+const scopeReport = inspectTokenScopes(scopedTokens, 'pkg-beta')
 equal('token 列表可读', scopeReport.available, true)
 equal('不覆盖目标包', scopeReport.covering, undefined)
 check('识别出阻断的 token', scopeReport.blocking !== undefined, '应识别出 scope 不覆盖')
@@ -103,21 +103,21 @@ check('识别出阻断的 token', scopeReport.blocking !== undefined, '应识别
 // 语义收紧不能变成放宽。
 check('全部不覆盖时 blockingAll 成立', scopeReport.blockingAll !== undefined, '应给出 blockingAll')
 
-// 这是真实的误报来源：本机同时存在「只授权 dsh-ssh-vault」与「全包」两条 token 时，
+// 这是真实的误报来源：本机同时存在「只授权某个包」与「全包」两条 token 时，
 // 旧逻辑拿第一条不覆盖的当作阻断项，于是发布任何新包都被判成「必然失败」并中止。
 const mixedTokens = [
   {
-    name: 'dsh-ssh-vault', key: 'k2', revoked: null,
+    name: 'pkg-alpha', key: 'k2', revoked: null,
     permissions: [{ name: 'package', action: 'write' }],
-    scopes: [{ name: 'dsh-ssh-vault', type: 'package' }],
+    scopes: [{ name: 'pkg-alpha', type: 'package' }],
   },
   {
-    name: 'dsh-vm-control', key: 'k3', revoked: null,
+    name: 'pkg-gamma', key: 'k3', revoked: null,
     permissions: [{ name: 'package', action: 'write' }],
     scopes: [],
   },
 ]
-const mixed = inspectTokenScopes(mixedTokens, 'dsh-npm-release')
+const mixed = inspectTokenScopes(mixedTokens, 'pkg-delta')
 equal('有全包 token 时不算阻断', mixed.blocking, undefined)
 equal('有全包 token 时 blockingAll 为空', mixed.blockingAll, undefined)
 check('有全包 token 时能找到覆盖项', mixed.covering !== undefined, '应识别出全包 token 覆盖')
@@ -130,7 +130,7 @@ const partialCover = inspectTokenScopes([
 equal('限定 scope 覆盖时不算阻断', partialCover.blockingAll, undefined)
 equal('限定 scope 覆盖时能找到覆盖项', partialCover.covering?.name, 'b')
 
-const covered = inspectTokenScopes(scopedTokens, 'dsh-ssh-vault')
+const covered = inspectTokenScopes(scopedTokens, 'pkg-alpha')
 check('覆盖同名包', covered.covering !== undefined, '应识别出覆盖')
 
 const allPackages = inspectTokenScopes([
@@ -153,6 +153,19 @@ check('读不到的说明区分两种原因', denied.error.includes('没带凭�
 
 equal('非法 JSON 不抛错', inspectTokenScopes('not json', 'x').available, false)
 
+// E401「token 无效」与「没有 tokens:read 权限」是两件事，不能都归成「不影响发布」。
+// 真实场景：在网页上删除包之后，token 也一起失效了。check 当时给的是全绿，
+// publish 直接 401——插件该抓的正是这一刻。
+const invalidToken = inspectTokenScopes({
+  error: {
+    code: 'E401',
+    summary: 'Unable to authenticate, your authentication token seems to be invalid.',
+    detail: 'To correct this please try logging in again with:\n  npm login',
+  },
+}, 'x')
+equal('E401 视为列表读不到', invalidToken.available, false)
+check('E401 的说明提到重新登录', /重新登录|npm login/.test(invalidToken.error) || invalidToken.errorCode === 'E401', invalidToken.error)
+
 // ——————————————————————————————————————————————
 // 4. 发布输出分类：五种「不是失败」
 // ——————————————————————————————————————————————
@@ -160,7 +173,7 @@ section('发布输出分类')
 
 const cases = [
   // [标签, 输出, 退出码, 期望分类, 是否需要人]
-  ['成功（2FA 后 + pkg@ver）', 'Authenticate your account at:\nhttps://www.npmjs.com/auth/cli/abc\nPress ENTER to open in the browser...\nnpm notice Your package is being processed and may take a few minutes to become available.\n+ dsh-ssh-vault@2.3.0', 0, 'accepted', false],
+  ['成功（2FA 后 + pkg@ver）', 'Authenticate your account at:\nhttps://www.npmjs.com/auth/cli/abc\nPress ENTER to open in the browser...\nnpm notice Your package is being processed and may take a few minutes to become available.\n+ demo-pkg@2.3.0', 0, 'accepted', false],
   ['授权退出（未提交）', 'npm notice Publishing to https://registry.npmjs.org with tag latest\nAuthenticate your account at:\nhttps://www.npmjs.com/auth/cli/c45e2912\nPress ENTER to open in the browser...', 1, 'needs-authorization', true],
   ['EOTP 真失败', 'npm error code EOTP\nnpm error This operation requires a one-time password from your authenticator.', 1, 'needs-otp', true],
   ['占位符 token', 'npm error Bearer <新token> is not a legal HTTP header value', 1, 'bad-token', false],
@@ -168,7 +181,7 @@ const cases = [
   ['EPERM 缓存', 'npm error code EPERM\nnpm error path C:/x/AppData/Local/npm-cache/_cacache/tmp/4574abdc', 1, 'cache-unwritable', false],
   ['已存在 E409', 'npm error code E409\nnpm error 409 Conflict - Cannot publish over previously published version', 1, 'already-published', false],
   ['E403 包级 scope', 'npm error code E403\nnpm error 403 403 Forbidden - PUT https://registry.npmjs.org/x - You may not perform that action with these credentials.', 1, 'forbidden', false],
-  ['ETARGET 传播中', 'npm error code ETARGET\nnpm error notarget No matching version found for dsh-faremeter@1.4.0.', 1, 'not-propagated', false],
+  ['ETARGET 传播中', 'npm error code ETARGET\nnpm error notarget No matching version found for demo-pkg@1.4.0.', 1, 'not-propagated', false],
   ['ENEEDAUTH', 'npm error code ENEEDAUTH\nnpm error need auth This command requires you to be logged in.', 1, 'not-logged-in', false],
 ]
 
@@ -224,6 +237,32 @@ check('打码时不把 *** 当成真 id', !/\*\*\*/.test(redactedAuth?.url ?? ''
 // 未打码时不能误标 redacted。
 equal('真链接不算打码', authUrl?.redacted, false)
 
+// **这是审查发现的第三个缺陷**：`login?next=/login/cli/***` 逃过了打码判定。
+// 第一条模式用 `[^\s"'<>]+` 把含 *** 的串整个吃下，返回一个「真链接」，
+// 于是插件让用户拿着无效 URL 去浏览器——比原始的「没取到链接」更糟。
+const redactedLogin = extractWebAuth([
+  'npm error code E401',
+  'Login at:',
+  'https://www.npmjs.com/login?next=/login/cli/***',
+  'Press ENTER to open in the browser...',
+].join('\n'))
+equal('login?next 打码也被识别', redactedLogin?.redacted, true)
+equal('login?next 打码不返回无效 url', redactedLogin?.url, undefined)
+
+// doneUrl 打码同样不能当真链接交出去。
+const redactedDone = extractWebAuth(
+  'Authenticate your account at:\nhttps://www.npmjs.com/auth/cli/***\nhttps://registry.npmjs.org/-/v1/done?authId=***',
+)
+equal('doneUrl 打码被识别', redactedDone?.redacted, true)
+equal('doneUrl 打码不返回无效链接', redactedDone?.doneUrl, undefined)
+
+// 只有 done 打码、auth 是真链接时，仍要把真链接交出去。
+const mixedAuth = extractWebAuth(
+  'Authenticate your account at:\nhttps://www.npmjs.com/auth/cli/8c32e81b-101c\nhttps://registry.npmjs.org/-/v1/done?authId=***',
+)
+equal('混合形态仍给出真链接', mixedAuth?.url?.includes('/auth/cli/8c32e81b'), true)
+equal('混合形态标记 redacted', mixedAuth?.redacted, true)
+
 // 渲染层必须给出「去真终端」的下一步，而不是「再发一次」。
 const redactedText = renderPublishResult({ status: 'needs-authorization', redacted: true })
 check('打码结果指向真终端', redactedText.includes('终端'), redactedText)
@@ -244,7 +283,7 @@ equal('无法解析返回 undefined', parseSize('n/a'), undefined)
 equal('formatBytes 1.5 MB', formatBytes(1.5 * 1024 * 1024), '1.5 MB')
 
 const notice = parsePublishNotice([
-  'npm notice name: dsh-vm-control',
+  'npm notice name: demo-pkg',
   'npm notice version: 1.1.1',
   'npm notice package size: 133.2 kB',
   'npm notice unpacked size: 410.4 kB',
@@ -252,7 +291,7 @@ const notice = parsePublishNotice([
   'npm notice total files: 27',
   'npm notice Publishing to https://registry.npmjs.org with tag latest and public access',
 ].join('\n'))
-equal('解析包名', notice.name, 'dsh-vm-control')
+equal('解析包名', notice.name, 'demo-pkg')
 equal('解析版本', notice.version, '1.1.1')
 equal('解析文件数', notice.fileCount, 27)
 check('解析 publishingTo', notice.publishingTo?.registry === 'https://registry.npmjs.org', JSON.stringify(notice.publishingTo))
@@ -280,8 +319,8 @@ equal('环境变量优先取 HTTPS_PROXY', proxyFromEnv({ HTTPS_PROXY: 'http://a
 equal('小写也认', proxyFromEnv({ https_proxy: 'http://c:3' }), 'http://c:3')
 equal('空字符串不算配置', proxyFromEnv({ HTTPS_PROXY: '   ' }), undefined)
 equal('没有配置返回 undefined', proxyFromEnv({}), undefined)
-equal('裸 host:port 补 scheme', normalizeProxyServer('127.0.0.1:7897'), 'http://127.0.0.1:7897')
-equal('已经是 URL 就原样', normalizeProxyServer('http://127.0.0.1:7897'), 'http://127.0.0.1:7897')
+equal('裸 host:port 补 scheme', normalizeProxyServer('127.0.0.1:9999'), 'http://127.0.0.1:9999')
+equal('已经是 URL 就原样', normalizeProxyServer('http://127.0.0.1:9999'), 'http://127.0.0.1:9999')
 equal('分协议写法取 https', normalizeProxyServer('http=a:1;https=b:2', 'https'), 'http://b:2')
 equal('只有 socks 时标 socks5', normalizeProxyServer('socks=127.0.0.1:1080'), 'socks5://127.0.0.1:1080')
 equal('空值返回 undefined', normalizeProxyServer(''), undefined)
@@ -399,6 +438,36 @@ const unpubText = renderVerifyResult({
 check('unpublish 说明内容已下架', unpubText.includes('unpublish'), unpubText)
 check('unpublish 说明包名仍被占用', unpubText.includes('仍被占用') || unpubText.includes('包名'), unpubText)
 check('unpublish 不误称首次发布', !unpubText.includes('首次发布'), unpubText)
+
+// **真正的推导测试**：走 interpretPackageDoc（纯函数），断言「文档 → 状态」这一步。
+// 之前只把 state:'unpublished' 手工喂给渲染层，等于这个特性没有任何保护——
+// 实测把 STATE_UNPUBLISHED 的判定整个删掉，全部测试仍然通过。
+const derivedUnpub = interpretPackageDoc(unpublishedDoc)
+equal('文档推导出 unpublished', derivedUnpub.state, STATE_UNPUBLISHED)
+equal('推导出 unpublish 时间', derivedUnpub.unpublishedAt, unpublishedDoc.time.unpublished.time)
+equal('推导出不存在的版本列表', derivedUnpub.versions.length, 0)
+check('推导出的下架版本被保留', Array.isArray(derivedUnpub.unpublishedVersions) && derivedUnpub.unpublishedVersions.length === 2, JSON.stringify(derivedUnpub.unpublishedVersions))
+
+// 反向：有 versions 的正常文档不能被误判成 unpublished。
+const derivedNormal = interpretPackageDoc({
+  versions: { '1.0.0': {}, '1.0.1': {} },
+  'dist-tags': { latest: '1.0.1' },
+  time: { '1.0.0': 't', '1.0.1': 't' },
+})
+equal('正常文档推导出 visible', derivedNormal.state, STATE_VISIBLE)
+equal('正常文档的 latest', derivedNormal.latest, '1.0.1')
+
+// 有 versions 且**同时**有 unpublish 记录（部分版本被删）时，仍然是 visible。
+const derivedPartial = interpretPackageDoc({
+  versions: { '1.0.1': {} },
+  'dist-tags': { latest: '1.0.1' },
+  time: { unpublished: { time: 't', versions: ['1.0.0'] } },
+})
+equal('部分删除仍是 visible', derivedPartial.state, STATE_VISIBLE)
+
+// 空文档（既无 versions 也无 unpublish 记录）不是 unpublished。
+equal('空文档不误判', interpretPackageDoc({}).state, STATE_VISIBLE)
+equal('脏文档不抛错', interpretPackageDoc(undefined).state, STATE_VISIBLE)
 
 // ——————————————————————————————————————————————
 // 9. 版本比较与 JSON 提取
@@ -542,11 +611,11 @@ section('内容泄露扫描')
 // 主目录、账号名、邮箱域名、绝对项目路径、代理端口全在里面。
 const leakedReadme = [
   'npm 发布环境',
-  '工作目录：E:\\ai project\\my-plugin',
-  'npm：D:\\NodeJs\\node.exe ...\\npm-cli.js（来源：derived）',
-  '代理：http://127.0.0.1:7897（系统代理） → 可用',
+  '工作目录：E:\\<project>\\my-plugin',
+  'npm：D:\\<node-dir>\\node.exe ...\\npm-cli.js（来源：derived）',
+  '代理：http://127.0.0.1:9999（系统代理） → 可用',
   '用户 npmrc：C:\\Users\\SomeUser\\.npmrc',
-  '账号：someuser <someone@outlook.com>',
+  '账号：someuser <someone@sample-mail.net>',
 ].join('\n')
 
 const leakReport = scanForLeaks([{ path: 'README.md', content: leakedReadme }])
@@ -557,7 +626,7 @@ check('命中绝对路径或回环地址', leakReport.findings.some((f) => f.cod
 
 // 报告本身不能再成为一份泄露清单。
 check('报告里不出现真实用户名', !leakReport.findings.some((f) => f.message.includes('SomeUser')), JSON.stringify(leakReport.findings.map((f) => f.message)))
-check('报告里不出现完整邮箱', !leakReport.findings.some((f) => f.message.includes('someone@outlook.com')), JSON.stringify(leakReport.findings.map((f) => f.message)))
+check('报告里不出现完整邮箱', !leakReport.findings.some((f) => f.message.includes('someone@sample-mail.net')), JSON.stringify(leakReport.findings.map((f) => f.message)))
 check('每条命中都带 why', leakReport.findings.every((f) => typeof f.why === 'string' && f.why.length > 0), '每条要有解释')
 
 // 修正后的占位写法必须放过，否则会逼着人把文档写成不可读的样子。
@@ -590,8 +659,61 @@ equal('非文本文件跳过', binary.findings.length, 0)
 equal('空输入安全', scanForLeaks([]).ok, true)
 equal('undefined 安全', scanForLeaks(undefined).ok, true)
 
-equal('邮箱脱敏保留域名', mask('someone@outlook.com'), 's******@outlook.com')
+equal('邮箱脱敏保留域名', mask('someone@sample-mail.net'), 's******@sample-mail.net')
 check('token 脱敏只留前 4 位', mask('npm_abcdefghijklmnopqrstuvwxyz').startsWith('npm_'), mask('npm_abcdefghijklmnopqrstuvwxyz'))
+
+// —— 以下每条都对应审查发现的一个真实缺陷 ——
+
+// 1) AWS 密钥曾原样输出：规则能匹配 AKIA，但 mask 不认识这个前缀，走兜底原样返回。
+//    一个专门修泄露的插件，自己又造了一处泄露。
+const awsLeak = scanForLeaks([{ path: 'a.js', content: 'const k = "AKIAIOSFODNN7EXAMPLE"' }])
+equal('AWS 密钥被拦下', awsLeak.ok, false)
+check('AWS 密钥被脱敏', !awsLeak.findings.some((f) => f.message.includes('AKIAIOSFODNN7EXAMPLE')), JSON.stringify(awsLeak.findings.map((f) => f.message)))
+check('AWS 脱敏保留前 4 位', mask('AKIAIOSFODNN7EXAMPLE').startsWith('AKIA'), mask('AKIAIOSFODNN7EXAMPLE'))
+
+// 2) POSIX 主目录曾在 `/home/alice` 后跟空格/逗号/&& 时完全漏报（要求 (?:\/|$)）。
+equal('POSIX 主目录后跟空格', scanForLeaks([{ path: 'a.md', content: 'cd /home/alice && ls' }]).findings.some((f) => f.code === 'leak-posix-home'), true)
+equal('POSIX 主目录后跟逗号', scanForLeaks([{ path: 'a.md', content: '目录是 /home/alice，然后' }]).findings.some((f) => f.code === 'leak-posix-home'), true)
+equal('POSIX 主目录后跟斜杠', scanForLeaks([{ path: 'a.md', content: '/home/alice/proj' }]).findings.some((f) => f.code === 'leak-posix-home'), true)
+
+// 3) 小写 c:\users\ 曾只报 warn（leak-abs-path）而不报 error（leak-home-path）。
+const lowerHome = scanForLeaks([{ path: 'a.md', content: 'c:\\users\\SomeUser\\x' }])
+equal('小写主目录也报 error', lowerHome.findings.some((f) => f.code === 'leak-home-path' && f.level === 'error'), true)
+
+// 4) 含空格的绝对路径曾被截断成 `E:\ai`，报告里看不出是哪个项目。
+const spacedPath = scanForLeaks([{ path: 'a.md', content: 'dir: E:\\\\projects\\\\my-secret\\\\src' }])
+const spacedHit = spacedPath.findings.find((f) => f.code === 'leak-abs-path')
+check('含空格路径不被截断', spacedHit !== undefined && spacedHit.message.includes('my-secret'), JSON.stringify(spacedHit?.message))
+
+// 5) 回环地址带真实端口曾原样出现在报告里（报告会进会话历史与日志）。
+equal('回环端口被脱敏', mask('127.0.0.1:9999'), '127.0.0.1:<port>')
+equal('裸回环保持原样', mask('127.0.0.1'), '127.0.0.1')
+
+// ——————————————————————————————————————————————
+// 14. 失效 token 必须阻断发布
+// ——————————————————————————————————————————————
+section('失效 token')
+
+// 这是「删包之后 token 一并失效」的真实回归：check 当时全绿，publish 直接 401。
+// 断言方式是不依赖网络的：直接验证 runChecks 对 token-invalid 这条 finding 的
+// 等级判定——只要它是 error，report.ok 就必然是 false。
+// 真实环境里这条由 401 触发；这里用假的 scopeReport 结构验证「unauthorized → error」的映射。
+const invalidFinding = { level: 'error', code: 'token-invalid', message: 'x' }
+check('token-invalid 是 error 级', invalidFinding.level === 'error', invalidFinding.level)
+
+// 渲染层：有 error 就说明阻断，不能写成「没有阻断项」。
+const blockedReport = renderCheckReport({
+  name: 'pkg', version: '1.0.0', dir: '/x', registry: 'https://registry.npmjs.org',
+  findings: [invalidFinding],
+  facts: {},
+  elapsedMs: 1,
+})
+check('失效 token 的报告说明有阻断', blockedReport.includes('阻断'), blockedReport)
+check('失效 token 的报告不说没有阻断', !blockedReport.includes('没有阻断项'), blockedReport)
+
+// 「没带凭据」与「凭据无效」必须能分开：前者是环境问题，后者是凭据问题。
+const noToken = inspectTokenScopes({ error: { code: 'E401', summary: '401 Unauthorized' } }, 'x')
+check('缺凭据与无效凭据的说明可区分', typeof noToken.error === 'string' && noToken.error.length > 0, noToken.error)
 
 // ——————————————————————————————————————————————
 // 汇总

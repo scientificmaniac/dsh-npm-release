@@ -12,7 +12,10 @@ import { homedir } from 'node:os'
 import path from 'node:path'
 import { probeFetch } from '../lib/http.js'
 
-const PROXY = 'http://127.0.0.1:7897'
+// 代理端口从环境变量读，不写死：这是本机配置，不是项目约定。
+// 用法：PROBE_PROXY=http://127.0.0.1:9999 node scripts/probe-2fa.mjs
+// 不设时走直连，脚本会如实报告实际走成的路径。
+const PROXY = process.env.PROBE_PROXY
 const URL_USER = 'https://registry.npmjs.org/-/npm/v1/user'
 const URL_TOKENS = 'https://registry.npmjs.org/-/npm/v1/tokens'
 const URL_PING = 'https://registry.npmjs.org/-/ping'
@@ -26,15 +29,21 @@ function readToken () {
 
 const token = readToken()
 console.log('本地 token：', token === undefined ? '未找到' : `${token.slice(0, 4)}…（长度 ${token.length}）`)
+console.log('代理：', PROXY ?? '（未设置 PROBE_PROXY，走直连）')
 
+// 代理相关场景在未配置代理时跳过：把「没设代理」当成「走了代理」来对照，
+// 会得到一份自己骗自己的实验结果。
+const proxyLabel = PROXY === undefined ? '直连' : '走代理'
 const scenarios = [
-  { label: '唯一直连 /-/ping（无凭据）', url: URL_PING, proxy: undefined },
-  { label: '走代理 /-/ping（无凭据）', url: URL_PING, proxy: PROXY },
-  { label: '唯一直连 /-/npm/v1/user（无凭据）', url: URL_USER, proxy: undefined },
-  { label: '走代理 /-/npm/v1/user（无凭据）', url: URL_USER, proxy: PROXY },
-  { label: '走代理 /-/npm/v1/user（带 token）', url: URL_USER, proxy: PROXY, auth: true },
-  { label: '走代理 /-/npm/v1/tokens（带 token）', url: URL_TOKENS, proxy: PROXY, auth: true },
-  { label: '唯一直连 /-/npm/v1/user（带 token）', url: URL_USER, proxy: undefined, auth: true },
+  { label: '直连 /-/ping（无凭据）', url: URL_PING, proxy: undefined },
+  ...(PROXY === undefined ? [] : [{ label: `${proxyLabel} /-/ping（无凭据）`, url: URL_PING, proxy: PROXY }]),
+  { label: '直连 /-/npm/v1/user（无凭据）', url: URL_USER, proxy: undefined },
+  ...(PROXY === undefined ? [] : [{ label: `${proxyLabel} /-/npm/v1/user（无凭据）`, url: URL_USER, proxy: PROXY }]),
+  ...(PROXY === undefined ? [] : [
+    { label: `${proxyLabel} /-/npm/v1/user（带 token）`, url: URL_USER, proxy: PROXY, auth: true },
+    { label: `${proxyLabel} /-/npm/v1/tokens（带 token）`, url: URL_TOKENS, proxy: PROXY, auth: true },
+  ]),
+  { label: '直连 /-/npm/v1/user（带 token）', url: URL_USER, proxy: undefined, auth: true },
 ]
 
 for (const scenario of scenarios) {

@@ -3,7 +3,7 @@
  *
  * 暴露一个模型面向的工具 `npm_release`，一个动作参数区分五个操作：
  *
- * - `check`   九项发布前检查（版本、凭据形态、token 包级 scope、注册源、代理、缓存、打包内容、包名占用、2FA 可查性）
+ * - `check`   十项发布前检查（版本、凭据形态、token 包级 scope、注册源、代理、缓存、打包内容、包名占用、2FA 可查性、内容泄露）
  * - `pack`    真实的打包预览，给回结构化的文件数与体积
  * - `publish` 发布；需要 2FA 时把授权链接交给人，**以 registry 的 dist-tags 判定成功**
  * - `verify`  只查 registry，不发布——用于「已经发过、只是还没传播完」
@@ -175,7 +175,7 @@ export function apply(ctx, config = {}) {
     },
 
     /**
-     * 九项发布前检查。
+     * 十项发布前检查。
      * @param args - 目录、registry、代理、跳过项。
      * @returns 文本。
      */

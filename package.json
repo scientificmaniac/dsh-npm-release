@@ -1,6 +1,6 @@
 {
   "name": "dsh-npm-release",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "按本机真实踩过的坑做 npm 打包与发布：凭据形态与包级 scope、镜像与发布源分流、代理可连通性、缓存可写性、2FA 人工授权、发布后以 dist-tags 判定，而不是拿 202 当成功。",
   "keywords": [
     "dsh",

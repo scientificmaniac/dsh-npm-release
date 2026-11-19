@@ -114,6 +114,14 @@ README/package.json，也不会被不会进包的 `.env`、测试数据淹没。
 
 > 注意：registry 的 `dist.shasum` 是 SHA1，拿它和本地算的 SHA256 对照永远不可能相等——真实发布里这一步白跑过一次。所以这里只比对同一种算法。
 
+除了「可见 / 不存在」，还有两种容易被误读的状态，`verify` 会分别说明：
+
+- **只有 `0.0.0-stage` 占位符** —— npm 为正在传播的发布预建的 stub。
+  `latest` 会指向它，看起来**完全像「包名被别人抢先注册」**，实际是「你的发布在路上」。
+- **`unpublished`** —— 曾经发布过、内容已全部下架。此时 `GET /<name>` **仍返回 200**，
+  只是 `versions` 与 `dist-tags` 被抽空、只剩 `time.unpublished`。
+  包名**仍归你**（别人注册不了），重新发布不需要改名。
+
 ---
 
 ## 2FA 的边界
@@ -142,6 +150,17 @@ Open this URL in your browser to authenticate:  ← 另一条 EOTP 文案
 
 拿到链接后插件停下，把 URL 交给你。你在浏览器里确认完，用同样参数再发一次
 （旧链接一次性失效，重发会拿到新链接）。
+
+**但有个前提：只在有 TTY 时才能拿到真链接。** 插件只能用 `stdio: pipe`，而 npm 在这种
+非交互环境下会把授权 URL 里的标识符渲染成 `***`（`auth/cli/***`、`done?authId=***`）。
+这时插件会明确告诉你「链接已被 npm 打码，去真终端执行」，**不会**把含星号的无效 URL
+当成可用链接塞给你——重发多少次都是 `***`。想在终端里自己走一遍就用：
+
+```powershell
+npm publish --registry https://registry.npmjs.org
+```
+
+> 这一条是真实撞出来的：早期实现把打码当成「没取到链接」，暗示重发即可，结果重发永远只有 `***`。
 
 **为什么不做全自动**：npm 正在收紧 bypass-2FA token，而且那等于把发布权交给无人值守进程。
 
@@ -190,7 +209,7 @@ node scripts/check-icon.mjs                  # 图标自检
 node scripts/probe-2fa.mjs                   # 2FA / 凭据链路对照实验（直连 vs 代理）
 node test/unit.mjs                           # 单元测试（纯函数与分类器）
 node test/smoke.mjs status                   # 真实环境自检（含账号与 2FA 模式）
-node test/smoke.mjs check "E:/path/to/pkg"   # 对真实包跑九项检查
+node test/smoke.mjs check "E:/path/to/pkg"   # 对真实包跑十项检查
 node test/smoke.mjs verify "E:/path/to/pkg"  # 对真实包校验 registry
 ```
 
