@@ -1,15 +1,15 @@
 # dsh-npm-release
 
-**把 npm 打包与发布里踩过的坑，变成缺省行为。**
+**把 npm 打包与发布里的常见失误，做成默认行为。**
 
 一个 DSH 插件：暴露 `npm_release` 工具，用一个 `action` 参数覆盖检查、打包、发布、校验与环境报告。
-它不替代 npm，补的是**发布这一段**——版本一致性、凭据形态与权限边界、代理、缓存、2FA 人工环节、以及发布后的判定。
+它不替代 npm，补的是**发布这一段**——版本一致性、凭据形态与权限边界、代理、缓存、2FA 人工环节，以及发布后的判定。
 
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![node](https://img.shields.io/badge/node-%3E%3D20-2EA44F)](package.json)
 ![DSH Plugin](https://img.shields.io/badge/DSH-Plugin-3B82F6)
 
-[更新日志](CHANGELOG.md) · [安全说明](SECURITY.md)
+[更新日志](CHANGELOG.md) · [安全说明](SECURITY.md) · [English](README.en.md) · [贡献指南](CONTRIBUTING.md)
 
 ---
 
@@ -77,17 +77,17 @@ README/package.json，也不会被不会进包的 `.env`、测试数据淹没。
 走 `npm pack --dry-run --json`，给回结构化摘要：文件数、压缩/展开体积、shasum、integrity、大文件、缺失文件。
 一次发布的原生清单有 27–32 行 `npm notice`，全部塞进上下文是浪费。
 
-### `action: "publish"` —— 发布，但以 registry 为准
+### `action: "publish"` —— 发布，并以 registry 的 `versions` 判定结果
 
 流程：
 
 1. 先跑一遍 `check`（可用 `skip_check: true` 跳过）；
 2. 调用 `npm publish --registry <官方源>`；
-3. 把输出按**十种形态**分类；
+3. 把输出按**十一种形态**分类；
 4. 需要 2FA 时停下，把授权链接交给你；
 5. 否则轮询 registry，直到真的看到这一版或超时。
 
-**十种输出分类**（用真实日志样本验证过）：
+**十一种输出分类**（用真实日志样本验证过）：
 
 | 分类 | 含义 | 下一步 |
 |---|---|---|
@@ -97,6 +97,7 @@ README/package.json，也不会被不会进包的 `.env`、测试数据淹没。
 | `bad-token` | token 不是合法 HTTP 头值 | 修 `.npmrc` |
 | `forbidden` | 403 | 分诊三种原因 |
 | `already-published` | 版本已存在 | 提版本 |
+| `republish-cooldown` | 包名 unpublish 后处于 24 小时冷却期 | **等满 24 小时，重试无效** |
 | `not-logged-in` | 无登录态 | 登录或给 token |
 | `cache-unwritable` | EPERM | 改缓存目录（已默认） |
 | `not-propagated` | ETARGET | **等，不要重发** |

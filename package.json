@@ -1,7 +1,7 @@
 {
   "name": "dsh-npm-release",
   "version": "1.0.2",
-  "description": "按本机真实踩过的坑做 npm 打包与发布：凭据形态与包级 scope、镜像与发布源分流、代理可连通性、缓存可写性、2FA 人工授权、发布后以 dist-tags 判定，而不是拿 202 当成功。",
+  "description": "按本机真实踩过的坑做 npm 打包与发布：凭据形态与包级 scope、镜像与发布源分流、代理可连通性、缓存可写性、2FA 人工授权、发布后以 registry 的 versions 是否真的出现该版本为准，而不是拿 202 当成功。",
   "keywords": [
     "dsh",
     "dsh-plugin",
@@ -46,14 +46,17 @@
     "cordis.patch.yml",
     "icon.svg",
     "README.md",
+    "README.en.md",
     "CHANGELOG.md",
+    "CHANGELOG.en.md",
     "SECURITY.md",
+    "SECURITY.en.md",
     "LICENSE"
   ],
   "icon": "./icon.svg",
   "meta": {
     "title": "npm release",
-    "description": "Check, pack, publish and verify an npm package in one place. The publish step waits for a human to authorize the 2FA prompt, and success is confirmed from the registry's dist-tags instead of the publish command's exit code."
+    "description": "Check, pack, publish and verify an npm package in one place. The publish step waits for a human to authorize the 2FA prompt, and success is confirmed from the registry's versions instead of the publish command's exit code."
   },
   "dsh": {
     "bundle": {

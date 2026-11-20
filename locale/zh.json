@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "npm 发布",
-    "description": "把 npm 包的检查、打包、发布与发布后确认放在一处。发布时会等人完成 2FA 授权；是否成功以 registry 的 dist-tags 是否真的更新为准，而不是发布命令的退出码。"
+    "description": "把 npm 包的检查、打包、发布与发布后确认放在一处。发布时会等人完成 2FA 授权；是否成功以 registry 的 versions 里是否真的出现该版本为准，而不是发布命令的退出码。"
   }
 }
